@@ -31,6 +31,7 @@
     DetailDescription?: string;
     SourceFile: string;
     uploaded_at: string;
+    related_type?: string;
   }
 
   // Reactive state variables using Svelte 5 Runes
@@ -212,7 +213,7 @@
       return { total: 0, totalWithoutIncident: 0, avgTicketsPerNonIncidentDay: '0.0', critical: 0, high: 0, resolvedRate: 0, avgHrs: '0.0' };
     }
 
-    // Group tickets in selected month by day to identify incident days (>= 50 tickets)
+    // Group tickets in selected month by day
     const days: Record<number, number> = {};
     list.forEach(t => {
       const date = new Date(t.CreatedDate);
@@ -222,19 +223,26 @@
       }
     });
 
-    const nonIncidentTickets = list.filter(t => {
+    const isIncidentTicket = (t: Ticket) => {
+      if (!t.related_type) return false;
+      const rt = t.related_type.toLowerCase();
+      return rt === 'parent' || rt === 'child';
+    };
+
+    const nonIncidentTickets = list.filter(t => !isIncidentTicket(t));
+    const totalWithoutIncident = nonIncidentTickets.length;
+
+    // Group non-incident tickets by day to find active normal days
+    const nonIncidentDays: Record<number, number> = {};
+    nonIncidentTickets.forEach(t => {
       const date = new Date(t.CreatedDate);
       if (!isNaN(date.getTime())) {
         const day = date.getDate();
-        return (days[day] || 0) < 50;
+        nonIncidentDays[day] = (nonIncidentDays[day] || 0) + 1;
       }
-      return true;
     });
-    const totalWithoutIncident = nonIncidentTickets.length;
 
-    // Calculate non-incident active days count and average
-    const nonIncidentDays = Object.keys(days).filter(day => (days[Number(day)] || 0) < 50);
-    const nonIncidentDaysCount = nonIncidentDays.length;
+    const nonIncidentDaysCount = Object.keys(nonIncidentDays).length;
     const avgTicketsPerNonIncidentDay = nonIncidentDaysCount > 0 
       ? (totalWithoutIncident / nonIncidentDaysCount).toFixed(1)
       : '0.0';
@@ -687,6 +695,7 @@
         </a>
         <a href="/analysis" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition">Analytics</a>
         <a href="/leaderboard" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition">Leaderboard</a>
+        <a href="/incident" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition">Incidents</a>
       </nav>
 
       <div class="flex items-center gap-3">
@@ -1221,6 +1230,11 @@
           <div class="space-y-1">
             <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Ticket Type</h4>
             <p class="text-slate-250 font-medium">{selectedTicket.ticket_type}</p>
+          </div>
+
+          <div class="space-y-1">
+            <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Related Type</h4>
+            <p class="text-slate-250 font-medium capitalize">{selectedTicket.related_type || 'None (Normal Request)'}</p>
           </div>
 
           <div class="space-y-1">

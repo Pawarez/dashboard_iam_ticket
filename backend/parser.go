@@ -85,6 +85,7 @@ func parseExcel(r io.Reader, filename string) ([]Ticket, int, error) {
 			TicketID:          get(row, idx, "ticket id"),
 			TicketType:        get(row, idx, "ticket type"),
 			Subject:           get(row, idx, "subject"),
+			RelatedType:       stringPtrIfValid(get(row, idx, "related type")),
 			Site:              stringPtrIfValid(get(row, idx, "site")),
 			SiteGroup:         stringPtrIfValid(get(row, idx, "site group")),
 			RegionSite:        stringPtrIfValid(get(row, idx, "region site")),

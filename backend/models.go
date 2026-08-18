@@ -9,6 +9,7 @@ type Ticket struct {
 	TicketID   string `gorm:"primaryKey" json:"ticket_id"`
 	TicketType string `json:"ticket_type"`
 	Subject    string `json:"subject"`
+	RelatedType *string `json:"related_type,omitempty"`
 
 	// Location & Organization
 	Site        *string `json:"site,omitempty"`
@@ -44,4 +45,14 @@ type Ticket struct {
 	// Source & Upload
 	SourceFile string
 	UploadedAt time.Time `gorm:"autoCreateTime" json:"uploaded_at"`
+}
+
+type Incident struct {
+	ID          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Date        string    `gorm:"uniqueIndex" json:"date"` // Format: YYYY-MM-DD
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	RootCause   string    `json:"root_cause"`
+	TicketCount int       `json:"ticket_count"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }

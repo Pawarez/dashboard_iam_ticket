@@ -173,7 +173,6 @@
       </div>
     </div>
 
-    <!-- Navigation Tabs -->
     <nav class="hidden sm:flex items-center gap-1 bg-slate-900 border border-slate-850 p-1 rounded-xl text-xs font-semibold">
       <a href="/" class="px-3.5 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition flex items-center gap-1.5">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -183,6 +182,7 @@
       </a>
       <a href="/analysis" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition">Analytics</a>
       <a href="/leaderboard" class="px-4 py-2 rounded-lg bg-indigo-600 text-white shadow-md shadow-indigo-600/10 transition">Leaderboard</a>
+      <a href="/incident" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition">Incidents</a>
     </nav>
 
 

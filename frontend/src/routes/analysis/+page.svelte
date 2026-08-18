@@ -30,6 +30,7 @@
     DetailDescription?: string;
     SourceFile: string;
     uploaded_at: string;
+    related_type?: string;
   }
 
   // Reactive state using Runes
@@ -170,29 +171,16 @@
   // --- Incident Tickets Filtering ---
   let showIncidentTickets = $state(true);
 
-  // Group tickets in current dataset by day to identify incident days (>= 50 tickets)
-  const incidentDates = $derived.by(() => {
-    const counts: Record<string, number> = {};
-    tickets.forEach(t => {
-      const d = new Date(t.CreatedDate);
-      if (!isNaN(d.getTime())) {
-        const key = d.toDateString();
-        counts[key] = (counts[key] || 0) + 1;
-      }
-    });
-    return counts;
-  });
+  // Helper to determine if a ticket is related to a parent/child incident
+  function isIncidentTicket(t: Ticket) {
+    if (!t.related_type) return false;
+    const rt = t.related_type.toLowerCase();
+    return rt === 'parent' || rt === 'child';
+  }
 
   // Count of incident tickets in the current month/dataset
   const incidentTicketsCount = $derived(
-    tickets.filter(t => {
-      const d = new Date(t.CreatedDate);
-      if (!isNaN(d.getTime())) {
-        const key = d.toDateString();
-        return (incidentDates[key] || 0) >= 50;
-      }
-      return false;
-    }).length
+    tickets.filter(isIncidentTicket).length
   );
 
   // Derived: Filter tickets by custom regex search query in Subject or DetailDescription and incident ticket status
@@ -201,14 +189,7 @@
 
     // Filter out incident tickets if toggle is off
     if (!showIncidentTickets) {
-      result = result.filter(t => {
-        const d = new Date(t.CreatedDate);
-        if (!isNaN(d.getTime())) {
-          const key = d.toDateString();
-          return (incidentDates[key] || 0) < 50;
-        }
-        return true;
-      });
+      result = result.filter(t => !isIncidentTicket(t));
     }
 
     if (descriptionSearchInput.trim()) {
@@ -514,6 +495,126 @@
     return result;
   });
 
+  // --- Feature 1: Time-Series & Trend Analysis ---
+  let activeTab = $state<'categories' | 'trends'>('categories');
+  let hoveredTrendIndex = $state<number | null>(null);
+
+  const dailyTrends = $derived.by(() => {
+    const list = filteredTickets;
+    const created = Array(31).fill(0);
+    const resolved = Array(31).fill(0);
+    
+    list.forEach(t => {
+      // Created Date
+      const cDate = new Date(t.CreatedDate);
+      if (!isNaN(cDate.getTime())) {
+        const day = cDate.getDate();
+        if (day >= 1 && day <= 31) {
+          created[day - 1]++;
+        }
+      }
+      
+      // Resolved Date
+      const endVal = t.ResolvedAt || t.CompleteTime || t.ClosedDate;
+      if (endVal) {
+        const rDate = new Date(endVal);
+        if (!isNaN(rDate.getTime())) {
+          const rDay = rDate.getDate();
+          if (rDay >= 1 && rDay <= 31) {
+            resolved[rDay - 1]++;
+          }
+        }
+      }
+    });
+
+    return Array.from({ length: 31 }, (_, i) => ({
+      day: i + 1,
+      created: created[i],
+      resolved: resolved[i]
+    }));
+  });
+
+  const maxTrendValue = $derived(
+    Math.max(...dailyTrends.map(d => Math.max(d.created, d.resolved)), 1)
+  );
+
+  // SVG Geometry for line chart
+  const chartW = 760;
+  const chartH = 260;
+  const chartPadding = { top: 20, bottom: 40, left: 40, right: 20 };
+
+  const trendCoords = $derived.by(() => {
+    const list = dailyTrends;
+    const w = chartW - chartPadding.left - chartPadding.right;
+    const h = chartH - chartPadding.top - chartPadding.bottom;
+    
+    return list.map((d, i) => {
+      const x = chartPadding.left + (i / 30) * w;
+      const yCreated = chartH - chartPadding.bottom - (d.created / maxTrendValue) * h;
+      const yResolved = chartH - chartPadding.bottom - (d.resolved / maxTrendValue) * h;
+      return { day: d.day, x, yCreated, yResolved, created: d.created, resolved: d.resolved };
+    });
+  });
+
+  const createdPath = $derived.by(() => {
+    const coords = trendCoords;
+    if (coords.length === 0) return '';
+    return 'M ' + coords.map(c => `${c.x} ${c.yCreated}`).join(' L ');
+  });
+
+  const resolvedPath = $derived.by(() => {
+    const coords = trendCoords;
+    if (coords.length === 0) return '';
+    return 'M ' + coords.map(c => `${c.x} ${c.yResolved}`).join(' L ');
+  });
+
+  const createdAreaPath = $derived.by(() => {
+    const coords = trendCoords;
+    if (coords.length === 0) return '';
+    const baseLineY = chartH - chartPadding.bottom;
+    const first = coords[0];
+    const last = coords[coords.length - 1];
+    return `M ${first.x} ${baseLineY} L ` + coords.map(c => `${c.x} ${c.yCreated}`).join(' L ') + ` L ${last.x} ${baseLineY} Z`;
+  });
+
+  const resolvedAreaPath = $derived.by(() => {
+    const coords = trendCoords;
+    if (coords.length === 0) return '';
+    const baseLineY = chartH - chartPadding.bottom;
+    const first = coords[0];
+    const last = coords[coords.length - 1];
+    return `M ${first.x} ${baseLineY} L ` + coords.map(c => `${c.x} ${c.yResolved}`).join(' L ') + ` L ${last.x} ${baseLineY} Z`;
+  });
+
+  // Heatmap Aggregation
+  const heatmapData = $derived.by(() => {
+    const list = filteredTickets;
+    const grid: number[][] = Array(7).fill(null).map(() => Array(24).fill(0));
+    
+    list.forEach(t => {
+      const date = new Date(t.CreatedDate);
+      if (!isNaN(date.getTime())) {
+        const day = date.getDay(); // 0 (Sun) - 6 (Sat)
+        const hour = date.getHours(); // 0 - 23
+        grid[day][hour]++;
+      }
+    });
+
+    let maxCount = 0;
+    for (let d = 0; d < 7; d++) {
+      for (let h = 0; h < 24; h++) {
+        if (grid[d][h] > maxCount) {
+          maxCount = grid[d][h];
+        }
+      }
+    }
+
+    return { grid, maxCount };
+  });
+
+  const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const shortDaysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
   // Reset category search when selected category changes
   $effect(() => {
     if (selectedCategoryName) {
@@ -575,7 +676,6 @@
       </div>
     </div>
 
-    <!-- Navigation Tabs -->
     <nav class="hidden sm:flex items-center gap-1 bg-slate-900 border border-slate-850 p-1 rounded-xl text-xs font-semibold">
       <a href="/" class="px-3.5 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition flex items-center gap-1.5">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -585,6 +685,7 @@
       </a>
       <a href="/analysis" class="px-4 py-2 rounded-lg bg-indigo-600 text-white shadow-md shadow-indigo-600/10 transition">Analytics</a>
       <a href="/leaderboard" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition">Leaderboard</a>
+      <a href="/incident" class="px-4 py-2 rounded-lg text-slate-400 hover:text-slate-200 transition">Incidents</a>
     </nav>
 
 
@@ -634,60 +735,103 @@
 
   <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
     
-    <!-- Title & Top Tier Navigation -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-      <div class="space-y-1">
-        <h2 class="text-xl font-bold tracking-tight text-white">Product Categorization Hub</h2>
-        <p class="text-xs text-slate-400 font-light">Interactive analysis and segmented solid pie charts for Product Tiers 1, 2, and 3.</p>
-      </div>
+    <!-- Main Workspace Selector -->
+    <div class="flex border-b border-slate-900/60 pb-px gap-6 text-[10px] font-bold uppercase tracking-wider mb-6">
+      <button 
+        onclick={() => { activeTab = 'categories'; descriptionSearchInput = ''; }}
+        class="pb-3 relative transition-all duration-200 cursor-pointer flex items-center gap-2
+          {activeTab === 'categories' ? 'text-indigo-400 font-extrabold' : 'text-slate-500 hover:text-slate-350'}"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M11 3.055A9.003 9.003 0 1020.945 13H11V3.055z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"/>
+        </svg>
+        <span>Product Categorizations</span>
+        {#if activeTab === 'categories'}
+          <div class="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-500 rounded-full" transition:slide={{ axis: 'x' }}></div>
+        {/if}
+      </button>
 
-      <!-- Tier Tabs Selector -->
-      <div class="flex bg-slate-950 border border-slate-900 p-1 rounded-xl text-xs font-semibold self-start md:self-auto shadow-inner">
-        {#each ['T1', 'T2', 'T3'] as tier}
-          <button 
-            onclick={() => activeTier = tier as any}
-            class="px-5 py-2.5 rounded-lg transition duration-200 border text-[11px] uppercase tracking-wider
-              {activeTier === tier 
-                ? 'bg-gradient-to-r from-indigo-500 to-violet-600 text-white font-bold border-indigo-400/30 shadow-[0_0_15px_rgba(99,102,241,0.35)]' 
-                : 'text-slate-400 border-transparent hover:text-white hover:bg-slate-900/60'}"
-          >
-            Product {tier}
-          </button>
-        {/each}
-      </div>
+      <button 
+        onclick={() => { activeTab = 'trends'; descriptionSearchInput = ''; }}
+        class="pb-3 relative transition-all duration-200 cursor-pointer flex items-center gap-2
+          {activeTab === 'trends' ? 'text-indigo-400 font-extrabold' : 'text-slate-500 hover:text-slate-350'}"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+        </svg>
+        <span>Time & Volume Trends</span>
+        {#if activeTab === 'trends'}
+          <div class="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-500 rounded-full" transition:slide={{ axis: 'x' }}></div>
+        {/if}
+      </button>
     </div>
 
-    <!-- Tier hierarchy breadcrumb indicator -->
-    {#if activeTier !== 'T1'}
-      <div class="flex flex-wrap items-center gap-2.5 text-xs font-mono px-5 py-3.5 bg-gradient-to-r from-slate-900 to-indigo-950/15 border-l-4 border-l-indigo-500 border-y border-r border-slate-900 rounded-xl shadow-lg">
-        <span class="font-bold text-slate-400 uppercase tracking-widest text-[9px] mr-1 flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
-          Active Scope:
-        </span>
-        <span class="text-indigo-300 font-bold px-2.5 py-1 rounded-lg bg-indigo-950/40 border border-indigo-900/40 shadow-sm">{selectedT1Category || 'All T1'}</span>
-        {#if activeTier === 'T3'}
-          <svg class="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
-          <span class="text-indigo-300 font-bold px-2.5 py-1 rounded-lg bg-indigo-950/40 border border-indigo-900/40 shadow-sm">{selectedT2Category || 'All T2'}</span>
-        {/if}
+    {#if activeTab === 'categories'}
+      <!-- Title & Top Tier Navigation -->
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div class="space-y-1">
+          <h2 class="text-xl font-bold tracking-tight text-white">Product Categorization Hub</h2>
+          <p class="text-xs text-slate-400 font-light">Interactive analysis and segmented solid pie charts for Product Tiers 1, 2, and 3.</p>
+        </div>
+
+        <!-- Tier Tabs Selector -->
+        <div class="flex bg-slate-950 border border-slate-900 p-1 rounded-xl text-xs font-semibold self-start md:self-auto shadow-inner">
+          {#each ['T1', 'T2', 'T3'] as tier}
+            <button 
+              onclick={() => activeTier = tier as any}
+              class="px-5 py-2.5 rounded-lg transition duration-200 border text-[11px] uppercase tracking-wider
+                {activeTier === tier 
+                  ? 'bg-gradient-to-r from-indigo-500 to-violet-600 text-white font-bold border-indigo-400/30 shadow-[0_0_15px_rgba(99,102,241,0.35)]' 
+                  : 'text-slate-400 border-transparent hover:text-white hover:bg-slate-900/60'}"
+            >
+              Product {tier}
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <!-- Tier hierarchy breadcrumb indicator -->
+      {#if activeTier !== 'T1'}
+        <div class="flex flex-wrap items-center gap-2.5 text-xs font-mono px-5 py-3.5 bg-gradient-to-r from-slate-900 to-indigo-950/15 border-l-4 border-l-indigo-500 border-y border-r border-slate-900 rounded-xl shadow-lg">
+          <span class="font-bold text-slate-400 uppercase tracking-widest text-[9px] mr-1 flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
+            Active Scope:
+          </span>
+          <span class="text-indigo-300 font-bold px-2.5 py-1 rounded-lg bg-indigo-950/40 border border-indigo-900/40 shadow-sm">{selectedT1Category || 'All T1'}</span>
+          {#if activeTier === 'T3'}
+            <svg class="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+            <span class="text-indigo-300 font-bold px-2.5 py-1 rounded-lg bg-indigo-950/40 border border-indigo-900/40 shadow-sm">{selectedT2Category || 'All T2'}</span>
+          {/if}
+        </div>
+      {/if}
+    {:else}
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div class="space-y-1">
+          <h2 class="text-xl font-bold tracking-tight text-white">Time-Series & Volume Trends</h2>
+          <p class="text-xs text-slate-400 font-light">Examine ticket density, daily generation trends, and resolution speeds over time.</p>
+        </div>
       </div>
     {/if}
 
-    <!-- Description Search Bar (Regex) -->
-    <div class="rounded-2xl border border-slate-900 bg-slate-950/40 p-4">
-      <div class="relative w-full">
-        <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="w-4 h-4 text-slate-400">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.637 10.637z" />
-          </svg>
-        </span>
-        <input
-          type="text"
-          bind:value={descriptionSearchInput}
-          placeholder="Filter by description keyword or regex (e.g. ต่ออายุ, error.*failed, request.*access)..."
-          class="w-full bg-slate-900 border border-slate-800 placeholder-slate-550 text-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/20 shadow-inner"
-        />
+    {#if activeTab === 'categories'}
+      <!-- Description Search Bar (Regex) -->
+      <div class="rounded-2xl border border-slate-900 bg-slate-950/40 p-4">
+        <div class="relative w-full">
+          <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="w-4 h-4 text-slate-400">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.637 10.637z" />
+            </svg>
+          </span>
+          <input
+            type="text"
+            bind:value={descriptionSearchInput}
+            placeholder="Filter by description keyword or regex (e.g. ต่ออายุ, error.*failed, request.*access)..."
+            class="w-full bg-slate-900 border border-slate-800 placeholder-slate-550 text-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/20 shadow-inner"
+          />
+        </div>
       </div>
-    </div>
+    {/if}
 
     {#if isLoading}
       <!-- Loader -->
@@ -713,7 +857,8 @@
       </div>
 
     {:else}
-      <!-- 3-Second Insight Header Panel -->
+      {#if activeTab === 'categories'}
+        <!-- 3-Second Insight Header Panel -->
       <section class="grid grid-cols-1 md:grid-cols-3 gap-4" in:fade>
         {#each topInsightCategories as category, idx}
           <div 
@@ -1050,6 +1195,181 @@
         </div>
 
       </div>
+    {:else}
+      <!-- Trend Analysis Workspace -->
+      <section class="grid grid-cols-1 gap-6" in:fade>
+        <!-- Daily created vs resolved line chart -->
+        <div class="rounded-3xl border border-slate-900 bg-slate-950/40 backdrop-blur-xl p-6 shadow-xl relative overflow-hidden group">
+          <div class="absolute -right-16 -top-16 w-36 h-36 bg-indigo-500/5 rounded-full blur-2xl group-hover:bg-indigo-500/10 transition duration-500"></div>
+          
+          <div class="flex items-center justify-between border-b border-slate-900/60 pb-4 mb-6">
+            <div>
+              <h3 class="text-sm font-bold text-slate-200">Daily Created vs. Resolved Volume</h3>
+              <p class="text-xs text-slate-550 mt-0.5">Visual comparison of incoming tickets against resolved tickets throughout the month.</p>
+            </div>
+            <!-- Legend indicators -->
+            <div class="flex items-center gap-4 text-[10px] font-mono font-bold">
+              <div class="flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+                <span class="text-slate-300">Created ({filteredTickets.length})</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                <span class="text-slate-300">Resolved ({filteredTickets.filter(t => t.ResolvedAt || t.CompleteTime || t.ClosedDate).length})</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chart Area -->
+          <div class="relative w-full overflow-x-auto select-none">
+            <svg viewBox="0 0 760 260" class="w-full h-auto overflow-visible">
+              <!-- Defs for Gradients -->
+              <defs>
+                <linearGradient id="createdGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#6366f1" stop-opacity="0.2" />
+                  <stop offset="100%" stop-color="#6366f1" stop-opacity="0.0" />
+                </linearGradient>
+                <linearGradient id="resolvedGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#10b981" stop-opacity="0.15" />
+                  <stop offset="100%" stop-color="#10b981" stop-opacity="0.0" />
+                </linearGradient>
+              </defs>
+
+              <!-- Grid Horizontal Lines -->
+              {#each [0, 0.25, 0.5, 0.75, 1] as pct}
+                {@const y = chartPadding.top + pct * (chartH - chartPadding.top - chartPadding.bottom)}
+                {@const val = Math.round(maxTrendValue * (1 - pct))}
+                <line x1={chartPadding.left} y1={y} x2={chartW - chartPadding.right} y2={y} stroke="#1e293b" stroke-width="0.75" stroke-dasharray="3,3" />
+                <text x={chartPadding.left - 10} y={y + 3} fill="#475569" font-size="8" font-family="monospace" text-anchor="end">{val}</text>
+              {/each}
+
+              <!-- Areas under paths for premium look -->
+              {#if createdAreaPath}
+                <path d={createdAreaPath} fill="url(#createdGrad)" />
+              {/if}
+              {#if resolvedAreaPath}
+                <path d={resolvedAreaPath} fill="url(#resolvedGrad)" />
+              {/if}
+
+              <!-- Grid Vertical Lines (Dotted day ticks) -->
+              {#each trendCoords as pt, idx}
+                {#if idx % 5 === 0 || idx === 30}
+                  <line x1={pt.x} y1={chartPadding.top} x2={pt.x} y2={chartH - chartPadding.bottom} stroke="#1e293b" stroke-width="0.5" stroke-dasharray="1,4" />
+                  <text x={pt.x} y={chartH - chartPadding.bottom + 14} fill="#475569" font-size="8" font-family="monospace" text-anchor="middle">Day {pt.day}</text>
+                {/if}
+              {/each}
+
+              <!-- Main Trend Lines -->
+              {#if createdPath}
+                <path d={createdPath} fill="none" stroke="#6366f1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+              {/if}
+              {#if resolvedPath}
+                <path d={resolvedPath} fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+              {/if}
+
+              <!-- Hover elements group -->
+              {#if hoveredTrendIndex !== null}
+                {@const activePt = trendCoords[hoveredTrendIndex]}
+                <!-- Vertical tracker line -->
+                <line x1={activePt.x} y1={chartPadding.top} x2={activePt.x} y2={chartH - chartPadding.bottom} stroke="#6366f1" stroke-width="1" stroke-dasharray="3,3" />
+                
+                <!-- Dotted anchor circles -->
+                <circle cx={activePt.x} cy={activePt.yCreated} r="5" fill="#6366f1" stroke="#ffffff" stroke-width="1.5" />
+                <circle cx={activePt.x} cy={activePt.yResolved} r="5" fill="#10b981" stroke="#ffffff" stroke-width="1.5" />
+              {/if}
+
+              <!-- Invisible overlay columns for interactive tracking -->
+              {#each trendCoords as pt, idx}
+                {@const colW = (chartW - chartPadding.left - chartPadding.right) / 31}
+                <rect 
+                  x={pt.x - colW/2} 
+                  y={chartPadding.top} 
+                  width={colW} 
+                  height={chartH - chartPadding.top - chartPadding.bottom} 
+                  fill="transparent" 
+                  class="cursor-pointer"
+                  onmouseenter={(e) => { 
+                    hoveredTrendIndex = idx; 
+                    const net = pt.created - pt.resolved;
+                    const netSign = net > 0 ? `+${net} Backlog Growth` : net < 0 ? `${net} Backlog Reduction` : 'Net Balanced';
+                    showTooltip(e, `Day ${pt.day}\n• Created: ${pt.created} tickets\n• Resolved: ${pt.resolved} tickets\n• Net Change: ${netSign}`);
+                  }}
+                  onmousemove={moveTooltip}
+                  onmouseleave={() => { hoveredTrendIndex = null; hideTooltip(); }}
+                />
+              {/each}
+            </svg>
+          </div>
+        </div>
+
+        <!-- Density Heatmap Card -->
+        <div class="rounded-3xl border border-slate-900 bg-slate-950/40 backdrop-blur-xl p-6 shadow-xl relative overflow-hidden group">
+          <div class="absolute -right-16 -top-16 w-36 h-36 bg-cyan-500/5 rounded-full blur-2xl group-hover:bg-cyan-500/10 transition duration-500"></div>
+
+          <div class="flex items-center justify-between border-b border-slate-900/60 pb-4 mb-6">
+            <div>
+              <h3 class="text-sm font-bold text-slate-200">24/7 Ticket Creation Density</h3>
+              <p class="text-xs text-slate-555 mt-0.5">Identify peak times by combining the day of the week and the hour of ticket generation.</p>
+            </div>
+            <!-- Heatmap Legend -->
+            <div class="flex items-center gap-1.5 text-[9px] font-mono text-slate-400">
+              <span>Low</span>
+              <div class="w-20 h-2.5 rounded bg-gradient-to-r from-slate-950 to-indigo-650 border border-slate-900 shadow-inner"></div>
+              <span>High Density</span>
+            </div>
+          </div>
+
+          <!-- Heatmap Matrix Grid -->
+          <div class="overflow-x-auto select-none pt-2">
+            <div class="min-w-[760px] space-y-1.5">
+              
+              <!-- Column headers (hours 0..23) -->
+              <div class="flex items-center gap-1">
+                <!-- Spacer for row label alignment -->
+                <div class="w-10 shrink-0"></div>
+                
+                {#each Array(24) as _, hour}
+                  {@const label = hour === 0 ? '12 AM' : hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`}
+                  <div class="flex-1 text-[8px] font-mono text-slate-500 text-center font-bold">{label}</div>
+                {/each}
+              </div>
+
+              <!-- Day Rows -->
+              {#each heatmapData.grid as hourCounts, dayIdx}
+                <div class="flex items-center gap-1">
+                  <!-- Row Day Title -->
+                  <div class="w-10 text-[10px] font-semibold text-slate-400 font-mono text-right pr-2 shrink-0">{shortDaysOfWeek[dayIdx]}</div>
+                  
+                  <!-- Hourly Cells -->
+                  {#each hourCounts as count, hourIdx}
+                    {@const opacity = heatmapData.maxCount > 0 ? (count / heatmapData.maxCount) : 0}
+                    {@const hasTickets = count > 0}
+                    <div 
+                      class="flex-1 h-7 rounded transition-all duration-200 border cursor-pointer relative hover:scale-105 hover:z-10 hover:border-indigo-400
+                        {hasTickets ? 'border-indigo-500/10' : 'border-slate-950 bg-slate-900/10'}"
+                      style="background-color: {hasTickets ? `rgba(99, 102, 241, ${0.1 + opacity * 0.9})` : ''};
+                             box-shadow: {hasTickets ? `inset 0 1px 0 rgba(255,255,255,${0.05 + opacity * 0.1})` : 'none'};"
+                      onmouseenter={(e) => {
+                        const dayName = daysOfWeek[dayIdx];
+                        const hourLabel = hourIdx === 0 ? '12 AM' : hourIdx === 12 ? '12 PM' : hourIdx > 12 ? `${hourIdx - 12} PM` : `${hourIdx} AM`;
+                        showTooltip(e, `${dayName} at ${hourLabel}\n• ${count} tickets created`);
+                      }}
+                      onmousemove={moveTooltip}
+                      onmouseleave={hideTooltip}
+                    >
+                      {#if count > 0}
+                        <span class="absolute inset-0 flex items-center justify-center text-[9px] font-mono font-bold text-slate-200">{count}</span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/each}
+
+            </div>
+          </div>
+        </div>
+      </section>
+    {/if}
     {/if}
 
   </main>
@@ -1114,6 +1434,11 @@
           <div class="space-y-1">
             <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Ticket Type</h4>
             <p class="text-slate-250 font-medium">{detailTicket.ticket_type}</p>
+          </div>
+
+          <div class="space-y-1">
+            <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Related Type</h4>
+            <p class="text-slate-250 font-medium capitalize">{detailTicket.related_type || 'None (Normal Request)'}</p>
           </div>
 
           <div class="space-y-1">

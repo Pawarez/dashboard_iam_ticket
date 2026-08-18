@@ -30,7 +30,7 @@ func main() {
 		log.Fatalf("failed to connect database: %v", err)
 	}
 
-	if err := db.AutoMigrate(&Ticket{}); err != nil {
+	if err := db.AutoMigrate(&Ticket{}, &Incident{}); err != nil {
 		log.Fatalf("failed to migrate: %v", err)
 	}
 
@@ -40,6 +40,9 @@ func main() {
 	r.POST("/upload", uploadHandler(db))
 	r.GET("/months", monthsHandler(db))
 	r.GET("/tickets", ticketsHandler(db))
+	r.GET("/incidents", incidentsHandler(db))
+	r.POST("/incidents", saveIncidentHandler(db))
+	r.GET("/detected-incidents", detectedIncidentsHandler(db))
 
 	log.Println("listening on :8081")
 	r.Run(":8081")
